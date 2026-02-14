@@ -1,0 +1,52 @@
+{
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Retrieves current weather for the given location.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and country e.g. Bogotá, Colombia"
+          },
+          "units": {
+            "type": "string",
+            "enum": [
+              "celsius",
+              "fahrenheit"
+            ],
+            "description": "Units the temperature will be returned in."
+          }
+        },
+        "required": [
+          "location",
+          "units"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_local_time",
+      "description": "Get the local time of a given location",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "location",
+          "timezone"
+        ],
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "The name or coordinates of the location for which to get the local time"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "The timezone of the location, defaults to the location's timezone if not provided"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}
