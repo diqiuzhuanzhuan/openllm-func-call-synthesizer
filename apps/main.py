@@ -105,6 +105,7 @@ def _patch_datasets_dill_for_py314() -> None:
     datasets_dill.Pickler._batch_setitems = _patched_batch_setitems
     datasets_dill.Pickler._py314_batch_patch = True
 
+_patch_datasets_dill_for_py314()
 
 load_dotenv(override=True)
 
@@ -293,7 +294,7 @@ def generate_query_dataset(cfg: DictConfig, function_docs: list[dict]):
     combined.to_json(str(output_dir / "train.jsonl"), orient="records", lines=True)
     combined.to_csv(str(output_dir / "train.csv"))
     combined.to_parquet(str(output_dir / "train.parquet"))
-    logger.info("Dataset saved to %s in jsonl, xlsx, parquet formats.", output_dir)
+    logger.info("Dataset saved to %s in jsonl, parquet formats.", output_dir)
 
 
 def generate_function_call_dataset(cfg: DictConfig, mcp_tools: list[dict]):
