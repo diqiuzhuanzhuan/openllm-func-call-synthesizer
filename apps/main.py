@@ -165,17 +165,7 @@ async def get_mcp_tools(mcp_cfg: dict) -> list[dict]:
 
 def choose_tools(openai_format_tools: dict, target_names: list[str]):
     if not target_names:
-        target_names = [
-            "search_photos",
-            "create_album",
-            "get_album_list",
-            "music_play_control",
-            "music_search_control",
-            "music_settings_control",
-            "video_search_control",
-            "video_play_control",
-            "get_system_info",
-        ]
+        return openai_format_tools
 
     # Iterate through openai_format_tools['tools'] and keep only function names found in target_names
     filtered_tools = []

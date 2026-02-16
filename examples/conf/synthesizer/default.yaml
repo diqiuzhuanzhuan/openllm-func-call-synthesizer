@@ -78,7 +78,6 @@ critic:
   enable: True
   function_call_dataset: "data/function_call_gpt_4o"
   output_dir: "data"
-  purpose: ""
   # cirtic need 'query', 'label', 'task_prompt'
   query_field: "query"
   task_prompt_field: "prompt"
