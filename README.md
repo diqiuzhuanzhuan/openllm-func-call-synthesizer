@@ -74,7 +74,10 @@ git clone https://github.com/diqiuzhuanzhuan/openllm-func-call-synthesizer.git
 cd openllm-func-call-synthesizer
 uv sync
 ```
-
+Is there no tool named 'uv'? You can install it with just one command:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
 ⸻
 
