@@ -103,7 +103,7 @@ pytest tests.test_openllm_func_call_synthesizer
 
 ## Deploying
 
-A reminder for the maintainers on how to deploy. Make sure all your changes are committed (including an entry in HISTORY.md). Then run:
+A reminder for the maintainers on how to deploy. Make sure all your changes are committed (including an entry in CHANGELOG.md). Then run:
 
 ```sh
 bump2version patch # possible: major / minor / patch

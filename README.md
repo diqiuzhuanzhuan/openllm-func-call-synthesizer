@@ -135,9 +135,22 @@ Configuration file: examples/conf/synthesizer/default.yaml
 * function_call_generation — generate function-call pairs from queries
 * critic — optional scoring/critique step
 * llama_factory — export to LlamaFactory-compatible dataset
+* verl - export to verl-compatible dataset
 
 See docs for full field descriptions.
 
+### Default pipeline walk-through
+
+The provided `examples/conf/synthesizer/default.yaml` wires every stage together:
+
+- **MCP bootstrap**: points to a local `ugreen_mcp` server on `http://localhost:8000/mcp`; leave it running before launching the synth job or queries will fail.
+- **Tool filtering**: `choose_part_tools: false` keeps the full toolset; set it to a list (e.g. `["search_photos"]`) to restrict generations to specific tools.
+- **Query generation**: reads `examples/function_docs.json`, emits multilingual prompts (English/Chinese/Japanese/German) under `data/function_query` via parallel OpenAI + Google model pools, each with generous TPM throttles for high-throughput runs.
+- **Function-call synthesis**: consumes the query dataset, calls `gpt-4o` through the OpenAI backend, and writes `data/function_call_gpt_4o/*.jsonl` (set `max_num` to limit volume or switch `output_format`).
+- **Critic pass**: re-scores every call with `gpt-5-mini-2025-08-07`, expecting `query/prompt/function_call/functions/answer` fields and emitting a scored dataset named `function_call_gpt_4o_critiqued_by_gpt_5_mini_2025_08_07`.
+- **Downstream exports**: both `llama_factory` and `verl` blocks draw from the critic output, keep only rows with `score >= 8`, and materialize ready-to-train JSONL files plus optional train/val splits.
+
+Feel free to copy the default file, tweak model lists or directories, and pass it via `python -m apps.main synthesizer=@your_config.yaml` for customized runs. For custom configurations, please refer to `example/conf/synthesizer/default.yaml`.
 ⸻
 
 🐚 Parallel Runner
