@@ -100,8 +100,21 @@ class FunctionCallGenerator(curator.LLM):
 
         seen = set()
         deduped = []
+
+        def _to_hashable(value):
+            if isinstance(value, list | dict):
+                try:
+                    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+                except TypeError:
+                    return str(value)
+            return value
+
         for item in input_ls:
-            key = (item.get("prompt", ""), item.get("function_call", ""), norm_answer(item.get("answer", "")))
+            key = (
+                _to_hashable(item.get("prompt", "")),
+                _to_hashable(item.get("function_call", "")),
+                norm_answer(item.get("answer", "")),
+            )
             if key not in seen:
                 seen.add(key)
                 deduped.append(item)
