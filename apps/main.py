@@ -26,6 +26,7 @@ import json
 import sys
 from pathlib import Path
 
+import datasets
 import hydra
 from datasets import concatenate_datasets, load_dataset
 from dotenv import load_dotenv
@@ -43,7 +44,7 @@ from openllm_func_call_synthesizer.utils import (
     convert_to_openai_tools,
     tool_format_convert,
 )
-from openllm_func_call_synthesizer.utils.dataset_utils import format_openai
+from openllm_func_call_synthesizer.utils.dataset_utils import format_openai, persist_dataset_if_changed
 
 
 def _patch_argparse_help_for_py314() -> None:
@@ -106,6 +107,45 @@ def _patch_datasets_dill_for_py314() -> None:
     datasets_dill.Pickler._py314_batch_patch = True
 
 _patch_datasets_dill_for_py314()
+
+
+def _patch_hash_code_for_dataset() -> None:
+
+    import hashlib
+
+    from datasets import Dataset
+    from datasets.fingerprint import Hasher
+    def md5sum(path):
+        m = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                m.update(chunk)
+        return m.hexdigest()
+
+    def generate_fingerprint(dataset: "Dataset") -> str:
+        state = dataset.__dict__
+        hasher = Hasher()
+        for key in sorted(state):
+            if key == "_fingerprint":
+                continue
+            hasher.update(key)
+            hasher.update(state[key])
+        # hash data files last modification timestamps as well
+        for cache_file in sorted(dataset.cache_files):
+            hasher.update(md5sum(cache_file))
+        print(hasher.hexdigest())
+        import time
+        time.sleep(10)
+        return hasher.hexdigest()
+
+    def _hash_code(self):
+        return hash(self._fingerprint)
+
+    datasets.fingerprint.generate_fingerprint = generate_fingerprint
+    Dataset._hash_code = _hash_code
+
+_patch_hash_code_for_dataset()
+
 
 load_dotenv(override=True)
 
@@ -281,10 +321,9 @@ def generate_query_dataset(cfg: DictConfig, function_docs: list[dict]):
     output_dir.mkdir(parents=True, exist_ok=True)
     # Save in multiple formats
     # Save JSON Lines under 'train.jsonl' so HuggingFace load_dataset can load it as the 'train' split
-    combined.to_json(str(output_dir / "train.jsonl"), orient="records", lines=True)
-    combined.to_csv(str(output_dir / "train.csv"))
-    combined.to_parquet(str(output_dir / "train.parquet"))
-    logger.info("Dataset saved to %s in jsonl, parquet formats.", output_dir)
+
+    persist_dataset_if_changed(combined, output_dir, "train")
+    logger.info("Dataset saved to %s in jsonl, csv, parquet formats.", output_dir)
 
 
 def generate_function_call_dataset(cfg: DictConfig, mcp_tools: list[dict]):
@@ -322,9 +361,7 @@ def generate_function_call_dataset(cfg: DictConfig, mcp_tools: list[dict]):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save results
-    fcg.dataset.to_json(str(output_dir / "train.jsonl"), orient="records", lines=True)
-    fcg.dataset.to_csv(str(output_dir / "train.csv"))
-    fcg.dataset.to_parquet(str(output_dir / "train.parquet"))
+    persist_dataset_if_changed(fcg.dataset, output_dir, "train")
     logger.info("Dataset saved to %s in train.jsonl, csv, parquet formats.", output_dir)
 
 
@@ -359,10 +396,7 @@ def critic_function_call_dataset(cfg: DictConfig):
 
     cg = critic_generate(dataset=dataset)
 
-    cg.dataset.to_json(str(output_dir / "train.jsonl"), orient="records", lines=True)
-    cg.dataset.to_csv(str(output_dir / "train.csv"))
-    cg.dataset.to_parquet(str(output_dir / "train.parquet"))
-
+    persist_dataset_if_changed(cg.dataset, output_dir, "train")
     logger.info("Dataset saved to %s in train.jsonl, csv, parquet formats.", output_dir)
 
 
