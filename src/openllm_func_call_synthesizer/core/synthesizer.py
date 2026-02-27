@@ -21,6 +21,7 @@
 # SOFTWARE.
 
 import json
+from dataclasses import dataclass
 
 from bespokelabs import curator
 from bespokelabs.curator.log import logger
@@ -216,22 +217,120 @@ class QueryGenerator(curator.LLM):
         return output
 
 
-class ConversionGenerator(curator.LLM):
-    """A simple conversion generator."""
+DEFAULT_USER_SYSTEM_PROMPT = (
+    "You are role-playing as the HUMAN participant in a conversation with an AI assistant. "
+    "Base your goals on the scenario description you are given. Ask natural follow-up questions, "
+    "refer to previous assistant replies, and keep your responses concise and realistic."
+)
+
+DEFAULT_ASSISTANT_SYSTEM_PROMPT = (
+    "You are the helpful AI assistant in a multi-turn conversation. Respond helpfully and "
+    "proactively address the human's requests from the scenario description."
+)
+
+
+@dataclass
+class ConversationTurn:
+    role: str
+    content: str
+
+
+class ConversationRoleLLM(curator.LLM):
+    """Internal helper LLM subclass that generates the next message for a conversation role."""
 
     return_completions_object = True
 
-    def prompt(self, input: dict) -> str:
-        """The prompt is used to generate the conversion."""
-        return f"""You are a conversion generation expert. Given the user request:
-        {input["user_request"]}.
-        Generate a conversion that can be used to satisfy the user request.
-        """
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        target_role: str,
+        system_prompt: str,
+        backend: str | None = None,
+        generation_params: dict | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(model_name=model_name, backend=backend, generation_params=generation_params, **kwargs)
+        self.target_role = target_role
+        self.system_prompt = system_prompt
+
+    def prompt(self, input: dict) -> list[dict[str, str]]:
+        scenario = input["scenario"]
+        history: list[dict[str, str]] = input.get("history", [])
+        messages: list[dict[str, str]] = [{"role": "system", "content": f"{self.system_prompt}\nScenario: {scenario}"}]
+        messages.extend(history)
+        if self.target_role == "user":
+            instruction = "Write the human participant's next natural message."
+        else:
+            instruction = "Respond as the assistant, addressing the latest human turn."
+        messages.append({"role": "user", "content": instruction})
+        return messages
 
     def parse(self, input: dict, response) -> dict:
-        """Parse the response to extract the conversion."""
-        input["conversion"] = response["choices"][0]["message"]["content"]
+        content = response["choices"][0]["message"]["content"].strip()
+        input["next_turn"] = {"role": self.target_role, "content": content}
         return input
+
+
+class ConversationGenerator:
+    """Simulate a two-LLM conversation using curator-powered role models."""
+
+    def __init__(
+        self,
+        *,
+        user_model_name: str,
+        assistant_model_name: str,
+        max_turns: int = 6,
+        user_backend: str | None = None,
+        assistant_backend: str | None = None,
+        user_generation_params: dict | None = None,
+        assistant_generation_params: dict | None = None,
+        user_system_prompt: str | None = None,
+        assistant_system_prompt: str | None = None,
+        human_llm: ConversationRoleLLM | None = None,
+        assistant_llm: ConversationRoleLLM | None = None,
+    ) -> None:
+
+        if max_turns < 2:
+            raise ValueError("max_turns must be at least 2 so both roles can speak")
+        self.max_turns = max_turns
+        self.human_llm = human_llm or ConversationRoleLLM(
+            model_name=user_model_name,
+            backend=user_backend,
+            generation_params=user_generation_params,
+            target_role="user",
+            system_prompt=user_system_prompt or DEFAULT_USER_SYSTEM_PROMPT,
+        )
+        self.assistant_llm = assistant_llm or ConversationRoleLLM(
+            model_name=assistant_model_name,
+            backend=assistant_backend,
+            generation_params=assistant_generation_params,
+            target_role="assistant",
+            system_prompt=assistant_system_prompt or DEFAULT_ASSISTANT_SYSTEM_PROMPT,
+        )
+
+    def _run_role_model(self, llm: ConversationRoleLLM, scenario: str, history: list[dict[str, str]]) -> dict[str, str]:
+        row = {"scenario": scenario, "history": history}
+        response = llm([row])
+        output_rows = response.dataset.to_list()
+        return output_rows[0]["next_turn"]
+
+    def generate(self, user_request: str, seed_history: list[dict[str, str]] | None = None) -> list[dict[str, str]]:
+        scenario_context = user_request.strip()
+        history = [ConversationTurn(**turn) for turn in (seed_history or [])]
+
+        while len(history) < self.max_turns:
+            if not history or history[-1].role == "assistant":
+                next_turn = self._run_role_model(self.human_llm, scenario_context, [t.__dict__ for t in history])
+                history.append(ConversationTurn(**next_turn))
+
+            if len(history) >= self.max_turns:
+                break
+
+            next_turn = self._run_role_model(self.assistant_llm, scenario_context, [t.__dict__ for t in history])
+            history.append(ConversationTurn(**next_turn))
+
+        return [turn.__dict__ for turn in history]
 
 
 if __name__ == "__main__":
