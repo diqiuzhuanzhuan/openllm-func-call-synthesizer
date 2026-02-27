@@ -88,12 +88,14 @@ class Critic(curator.LLM):
         if not label and not answer:
             raise ValueError("either label or answer is required")
 
-        answer_data = json.loads(answer)
-        content = answer_data.get("content")
-        if content:
-            answer_filter_think = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-        else:
-            answer_filter_think = answer
+        answer_filter_think = ""
+        if answer:
+            answer_data = json.loads(answer)
+            content = answer_data.get("content")
+            if content:
+                answer_filter_think = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            else:
+                answer_filter_think = answer
 
         print("===========answer_filter_think============\n", answer_filter_think)
         model_output = label if label else answer_filter_think
