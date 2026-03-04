@@ -21,7 +21,9 @@
 # SOFTWARE.
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from bespokelabs import curator
 from bespokelabs.curator.log import logger
@@ -331,6 +333,94 @@ class ConversationGenerator:
             history.append(ConversationTurn(**next_turn))
 
         return [turn.__dict__ for turn in history]
+
+
+class ToolCallingLoop:
+    """Run an agentic tool-calling loop, dispatching tool calls via the MCP protocol.
+
+    The *llm_callable* receives the current messages list and must return a single
+    assistant message dict (``{"role": "assistant", ...}``).  When that message
+    contains a ``tool_calls`` list the loop executes each call in order via the
+    provided ``fastmcp.Client``, appends a ``{"role": "tool", ...}`` message for
+    each result, and calls the LLM again.  The loop stops when the assistant
+    returns a message without ``tool_calls`` or after *max_iterations* LLM calls.
+
+    Args:
+        llm_callable: ``(messages: list[dict]) -> dict`` – returns the assistant reply.
+        mcp_client: A ``fastmcp.Client`` instance used to call tools via MCP.
+        max_iterations: Upper bound on the number of LLM calls (default 10).
+    """
+
+    def __init__(
+        self,
+        llm_callable: Callable[[list[dict]], dict],
+        mcp_client: Any,
+        max_iterations: int = 10,
+    ) -> None:
+        if max_iterations < 1:
+            raise ValueError("max_iterations must be at least 1")
+        self.llm = llm_callable
+        self.mcp_client = mcp_client
+        self.max_iterations = max_iterations
+
+    @staticmethod
+    def _extract_content(result: Any) -> str:
+        """Extract a plain-text string from a ``fastmcp`` ``CallToolResult``."""
+        parts = [block.text for block in result.content if hasattr(block, "text")]
+        text = "\n".join(parts) if parts else (str(result.data) if result.data is not None else "")
+        return f"Error: {text}" if result.is_error else text
+
+    async def _execute_tool(self, tool_call: dict) -> str:
+        """Execute one tool call via MCP and return its result as a string."""
+        function = tool_call.get("function", {})
+        name = function.get("name", "")
+        arguments_raw = function.get("arguments", "{}")
+
+        try:
+            arguments = json.loads(arguments_raw) if isinstance(arguments_raw, str) else arguments_raw
+        except json.JSONDecodeError:
+            arguments = {}
+
+        try:
+            result = await self.mcp_client.call_tool(name, arguments, raise_on_error=False)
+            return self._extract_content(result)
+        except Exception as exc:
+            return f"Error calling tool '{name}': {exc}"
+
+    async def run(self, messages: list[dict]) -> list[dict]:
+        """Run the tool-calling loop and return the complete messages list.
+
+        Opens the MCP client for the duration of the loop so the connection is
+        shared across all tool calls within a single ``run()`` invocation.
+
+        Args:
+            messages: Seed messages (system / user / …).
+
+        Returns:
+            The full conversation including assistant replies and tool results.
+        """
+        messages = list(messages)
+
+        async with self.mcp_client:
+            for _ in range(self.max_iterations):
+                response_message = self.llm(messages)
+                messages.append(response_message)
+
+                tool_calls = response_message.get("tool_calls")
+                if not tool_calls:
+                    break
+
+                for tool_call in tool_calls:
+                    result = await self._execute_tool(tool_call)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": result,
+                        }
+                    )
+
+        return messages
 
 
 if __name__ == "__main__":
