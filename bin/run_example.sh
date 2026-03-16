@@ -13,6 +13,24 @@ SERVER_URL="http://localhost:8000/mcp"
 RESTART_DELAY=2
 
 # ===============================
+# wait for server ready
+# ===============================
+wait_for_server() {
+    echo "[INFO] Waiting for MCP Server to be ready at $SERVER_URL"
+    for i in {1..30}; do
+        if curl -s -o /dev/null "$SERVER_URL"; then
+            echo "[INFO] MCP Server is ready"
+            return 0
+        fi
+        echo "[INFO] Server not ready yet (attempt $i/30)..."
+        sleep 1
+    done
+
+    echo "[ERROR] MCP Server did not become ready in time"
+    exit 1
+}
+
+# ===============================
 # start and daemonize server
 # ===============================
 start_server() {
@@ -44,6 +62,9 @@ trap cleanup EXIT
 
 # start server in background
 start_server &
+
+# wait until server is reachable before launching main script
+wait_for_server
 
 # ===============================
 # start main script
