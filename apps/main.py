@@ -36,6 +36,7 @@ from rich import pretty
 
 from openllm_func_call_synthesizer.core.critic import Critic
 from openllm_func_call_synthesizer.core.synthesizer import (
+    ConversationGenerator,
     FunctionCallGenerator,
     QueryGenerator,
 )
@@ -326,6 +327,66 @@ def generate_query_dataset(cfg: DictConfig, function_docs: list[dict]):
     logger.info("Dataset saved to %s in jsonl, csv, parquet formats.", output_dir)
 
 
+def _load_conversation_seed_records(conversation_cfg: DictConfig) -> list[dict]:
+    records: list[dict] = []
+
+    for scenario in conversation_cfg.get("scenarios", []):
+        if isinstance(scenario, str) and scenario.strip():
+            records.append({"scenario": scenario.strip()})
+
+    input_file = conversation_cfg.get("input_file")
+    if input_file:
+        input_path = Path(input_file)
+        if not input_path.exists():
+            raise FileNotFoundError(f"Conversation input file {input_path} not found")
+
+        if input_path.is_dir():
+            data_files = {"train": str(input_path / "train.jsonl")}
+        else:
+            data_files = {"train": str(input_path)}
+
+        dataset = load_dataset("json", data_files=data_files)["train"]
+        records.extend(dataset.to_list())
+
+    if not records:
+        raise ValueError("conversation_generation requires at least one scenario or an input_file")
+
+    max_num = conversation_cfg.get("max_num", -1)
+    if max_num and max_num > 0:
+        records = records[:max_num]
+
+    return records
+
+
+def generate_conversation_dataset(cfg: DictConfig):
+    conversation_cfg = cfg.synthesizer.conversation_generation
+    records = _load_conversation_seed_records(conversation_cfg)
+
+    user_provider = OmegaConf.to_container(conversation_cfg.user_provider, resolve=True)
+    assistant_provider = OmegaConf.to_container(conversation_cfg.assistant_provider, resolve=True)
+
+    generator = ConversationGenerator(
+        user_model_name=user_provider["model_name"],
+        assistant_model_name=assistant_provider["model_name"],
+        max_turns=conversation_cfg.max_turns,
+        user_backend=user_provider.get("backend"),
+        assistant_backend=assistant_provider.get("backend"),
+        user_generation_params=user_provider.get("generation_params"),
+        assistant_generation_params=assistant_provider.get("generation_params"),
+        user_system_prompt=conversation_cfg.get("user_system_prompt"),
+        assistant_system_prompt=conversation_cfg.get("assistant_system_prompt"),
+    )
+
+    dataset_rows = generator.generate_dataset(records)
+    dataset = datasets.Dataset.from_list(dataset_rows)
+
+    output_dir = Path(conversation_cfg.output_dir) / conversation_cfg.name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    persist_dataset_if_changed(dataset, output_dir, "train")
+    logger.info("Conversation dataset saved to %s in train.jsonl, csv, parquet formats.", output_dir)
+
+
 def generate_function_call_dataset(cfg: DictConfig, mcp_tools: list[dict]):
     # Load the function dataset
     function_call_cfg = cfg.synthesizer.function_call_generation
@@ -477,6 +538,8 @@ def main(cfg: DictConfig):
 
     if cfg.synthesizer.query_generation.enable:
         generate_query_dataset(cfg, function_docs=openai_format_tools)
+    if cfg.synthesizer.conversation_generation.enable:
+        generate_conversation_dataset(cfg)
     if cfg.synthesizer.function_call_generation.enable:
         generate_function_call_dataset(cfg, mcp_tools=mcp_tools)
     if cfg.synthesizer.critic.enable:

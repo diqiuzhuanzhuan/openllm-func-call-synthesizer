@@ -10,6 +10,7 @@
 ## ✨ Features
 
 - 📝 Generate synthetic function call datasets for LLM training and evaluation
+- 💬 Generate synthetic multi-turn conversation datasets
 - ⚙️ Flexible configuration via YAML and Hydra
 - 💻 CLI interface powered by Typer & Rich
 - 🔧 Utility functions for dataset manipulation
@@ -98,6 +99,11 @@ Enable function-call generation with custom name:
 python -m apps.main synthesizer.function_call_generation.enable=True synthesizer.function_call_generation.name=function_call_gpt_4o
 ```
 
+Enable conversation dataset generation:
+```bash
+python -m apps.main synthesizer.conversation_generation.enable=True
+```
+
 Override languages dynamically:
 
 ```bash
@@ -132,6 +138,7 @@ Configuration file: examples/conf/synthesizer/default.yaml
 * mcp_servers — MCP server(s) to query for available tools
 * choose_part_tools — filter toolset to a subset
 * query_generation — generate seed queries from function docs
+* conversation_generation — generate multi-turn user/assistant conversations from scenarios
 * function_call_generation — generate function-call pairs from queries
 * critic — optional scoring/critique step
 * llama_factory — export to LlamaFactory-compatible dataset

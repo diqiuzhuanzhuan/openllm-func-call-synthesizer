@@ -20,6 +20,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import json
+
 import pytest
 
 from openllm_func_call_synthesizer.core.synthesizer import ConversationGenerator
@@ -90,3 +92,79 @@ def test_generate_conversation_respects_turn_limit():
 def test_invalid_turn_limit_raises():
     with pytest.raises(ValueError):
         ConversationGenerator(user_model_name="u", assistant_model_name="a", max_turns=1)
+
+
+def test_generate_conversation_rejects_wrong_role():
+    generator = ConversationGenerator(
+        user_model_name="human",
+        assistant_model_name="assistant",
+        max_turns=2,
+        human_llm=FakeLLM([
+            {"role": "assistant", "content": "I should not be here"},
+        ]),
+        assistant_llm=FakeLLM([]),
+    )
+
+    with pytest.raises(ValueError, match="Expected role 'user'"):
+        generator.generate("Book a trip to Japan")
+
+
+def test_generate_conversation_rejects_empty_content():
+    generator = ConversationGenerator(
+        user_model_name="human",
+        assistant_model_name="assistant",
+        max_turns=2,
+        human_llm=FakeLLM([
+            {"role": "user", "content": "   "},
+        ]),
+        assistant_llm=FakeLLM([]),
+    )
+
+    with pytest.raises(ValueError, match="non-empty string"):
+        generator.generate("Book a trip to Japan")
+
+
+def test_generate_dataset_serializes_seed_history_and_conversation():
+    generator = ConversationGenerator(
+        user_model_name="human",
+        assistant_model_name="assistant",
+        max_turns=4,
+        human_llm=FakeLLM([
+            {"role": "user", "content": "Can you narrow it down?"},
+        ]),
+        assistant_llm=FakeLLM([
+            {"role": "assistant", "content": "Sure, what budget do you have?"},
+        ]),
+    )
+
+    rows = generator.generate_dataset(
+        [
+            {
+                "scenario": "Help me choose a laptop",
+                "seed_history": [
+                    {"role": "user", "content": "I need a laptop."},
+                    {"role": "assistant", "content": "What matters most to you?"},
+                ],
+            }
+        ]
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["scenario"] == "Help me choose a laptop"
+    assert rows[0]["turn_count"] == 4
+    assert json.loads(rows[0]["seed_history"])[0]["role"] == "user"
+    conversation = json.loads(rows[0]["conversation"])
+    assert [turn["role"] for turn in conversation] == ["user", "assistant", "user", "assistant"]
+
+
+def test_generate_dataset_requires_non_empty_scenario():
+    generator = ConversationGenerator(
+        user_model_name="human",
+        assistant_model_name="assistant",
+        max_turns=2,
+        human_llm=FakeLLM([{"role": "user", "content": "hi"}]),
+        assistant_llm=FakeLLM([{"role": "assistant", "content": "hello"}]),
+    )
+
+    with pytest.raises(ValueError, match="missing a non-empty scenario"):
+        generator.generate_dataset([{"seed_history": []}])

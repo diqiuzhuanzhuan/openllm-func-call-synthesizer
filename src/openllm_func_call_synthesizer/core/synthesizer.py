@@ -317,6 +317,21 @@ class ConversationGenerator:
         output_rows = response.dataset.to_list()
         return output_rows[0]["next_turn"]
 
+    @staticmethod
+    def _validate_turn(turn: dict[str, str], expected_role: str) -> ConversationTurn:
+        if not isinstance(turn, dict):
+            raise ValueError(f"Conversation turn must be a dict, got {type(turn).__name__}")
+
+        role = turn.get("role")
+        content = turn.get("content")
+
+        if role != expected_role:
+            raise ValueError(f"Expected role '{expected_role}', got '{role}'")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError(f"Conversation turn content for role '{expected_role}' must be a non-empty string")
+
+        return ConversationTurn(role=role, content=content.strip())
+
     def generate(self, user_request: str, seed_history: list[dict[str, str]] | None = None) -> list[dict[str, str]]:
         scenario_context = user_request.strip()
         history = [ConversationTurn(**turn) for turn in (seed_history or [])]
@@ -324,15 +339,38 @@ class ConversationGenerator:
         while len(history) < self.max_turns:
             if not history or history[-1].role == "assistant":
                 next_turn = self._run_role_model(self.human_llm, scenario_context, [t.__dict__ for t in history])
-                history.append(ConversationTurn(**next_turn))
+                history.append(self._validate_turn(next_turn, "user"))
 
             if len(history) >= self.max_turns:
                 break
 
             next_turn = self._run_role_model(self.assistant_llm, scenario_context, [t.__dict__ for t in history])
-            history.append(ConversationTurn(**next_turn))
+            history.append(self._validate_turn(next_turn, "assistant"))
 
         return [turn.__dict__ for turn in history]
+
+    def generate_dataset(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        dataset_rows: list[dict[str, Any]] = []
+        for index, record in enumerate(records):
+            scenario = (record.get("scenario") or record.get("user_request") or "").strip()
+            if not scenario:
+                raise ValueError(f"Conversation dataset record {index} is missing a non-empty scenario")
+
+            seed_history = record.get("seed_history") or []
+            if not isinstance(seed_history, list):
+                raise ValueError(f"Conversation dataset record {index} has invalid seed_history: expected list")
+
+            conversation = self.generate(scenario, seed_history=seed_history)
+            dataset_rows.append(
+                {
+                    "scenario": scenario,
+                    "seed_history": json.dumps(seed_history, ensure_ascii=False),
+                    "conversation": json.dumps(conversation, ensure_ascii=False),
+                    "turn_count": len(conversation),
+                }
+            )
+
+        return dataset_rows
 
 
 class ToolCallingLoop:
