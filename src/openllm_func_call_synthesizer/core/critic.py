@@ -22,10 +22,13 @@
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import litellm
 from bespokelabs import curator
+from deepeval import evaluate
+from deepeval.evaluate.configs import AsyncConfig, CacheConfig, DisplayConfig, ErrorConfig
 from deepeval.metrics import GEval
 from deepeval.models.base_model import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase
@@ -213,6 +216,11 @@ class LiteLLMDeepEvalModel(DeepEvalBaseLLM):
         return self._coerce_schema_output(self._completion(prompt), schema)
 
 
+@dataclass
+class CriticRunResult:
+    dataset: Any
+
+
 class DeepEvalCritic:
     """DeepEval-backed critic that emits dataset-compatible score and reason fields."""
 
@@ -233,6 +241,7 @@ class DeepEvalCritic:
         purpose="function_call",
         use_gt=False,
         threshold: float = 0.5,
+        async_config: dict[str, Any] | None = None,
         **kwargs,
     ) -> None:
         del response_format, batch, kwargs
@@ -249,6 +258,13 @@ class DeepEvalCritic:
         self.use_gt = use_gt
         self.purpose = purpose
         self.threshold = threshold
+        self.run_async = True
+        self.max_concurrent = 20
+        self.throttle_value = 0
+        if async_config:
+            self.run_async = bool(async_config.get("run_async", self.run_async))
+            self.max_concurrent = int(async_config.get("max_concurrent", self.max_concurrent))
+            self.throttle_value = int(async_config.get("throttle_value", self.throttle_value))
         self.eval_model = LiteLLMDeepEvalModel(
             model_name=model_name,
             backend=backend,
@@ -359,8 +375,78 @@ class DeepEvalCritic:
         row["critic_backend"] = "deepeval"
         return row
 
+    @staticmethod
+    def _metric_data_to_row(row: dict[str, Any], metric_data: Any) -> dict[str, Any]:
+        reason = getattr(metric_data, "reason", "") or "No reason provided"
+        score = float(getattr(metric_data, "score", 0.0) or 0.0)
+        error = getattr(metric_data, "error", None)
+        if error:
+            score = 0.0
+            reason = str(error)
+
+        row["score"] = score
+        row["reason"] = reason
+        row["raw_critic_output"] = json.dumps(
+            {
+                "backend": "deepeval",
+                "metric": getattr(metric_data, "name", "GEval"),
+                "score": score,
+                "reason": reason,
+                "error": str(error) if error else None,
+            },
+            ensure_ascii=False,
+        )
+        row["critic_backend"] = "deepeval"
+        return row
+
     def evaluate_dataset(self, dataset):
-        return dataset.map(self.score_row)
+        rows = dataset.to_list()
+        if not rows:
+            return dataset
+
+        test_cases = [self._build_test_case(dict(row)) for row in rows]
+        metric = self._build_metric()
+        result = evaluate(
+            test_cases=test_cases,
+            metrics=[metric],
+            async_config=AsyncConfig(
+                run_async=self.run_async,
+                max_concurrent=self.max_concurrent,
+                throttle_value=self.throttle_value,
+            ),
+            display_config=DisplayConfig(show_indicator=False, print_results=False),
+            cache_config=CacheConfig(write_cache=False, use_cache=False),
+            error_config=ErrorConfig(ignore_errors=True, skip_on_missing_params=False),
+        )
+
+        scored_rows = []
+        for row, test_result in zip(rows, result.test_results, strict=True):
+            metrics_data = getattr(test_result, "metrics_data", [])
+            metric_data = metrics_data[0] if metrics_data else None
+            if metric_data is None:
+                row["score"] = 0.0
+                row["reason"] = "DeepEval returned no metric result"
+                row["raw_critic_output"] = json.dumps(
+                    {
+                        "backend": "deepeval",
+                        "metric": "GEval",
+                        "score": 0.0,
+                        "reason": row["reason"],
+                        "error": "missing_metrics_data",
+                    },
+                    ensure_ascii=False,
+                )
+                row["critic_backend"] = "deepeval"
+                scored_rows.append(row)
+                continue
+            scored_rows.append(self._metric_data_to_row(row, metric_data))
+
+        from datasets import Dataset
+
+        return Dataset.from_list(scored_rows)
+
+    def __call__(self, *, dataset: Any) -> CriticRunResult:
+        return CriticRunResult(dataset=self.evaluate_dataset(dataset))
 
 
 def build_critic(*, backend_type: str = "legacy_llm", **kwargs):
@@ -372,11 +458,7 @@ def build_critic(*, backend_type: str = "legacy_llm", **kwargs):
 
 
 def score_dataset_with_critic(critic, dataset):
-    if isinstance(critic, LegacyCritic):
-        return critic(dataset=dataset).dataset
-    if hasattr(critic, "evaluate_dataset"):
-        return critic.evaluate_dataset(dataset)
-    raise TypeError(f"Unsupported critic instance: {type(critic)!r}")
+    return critic(dataset=dataset).dataset
 
 
 Critic = LegacyCritic

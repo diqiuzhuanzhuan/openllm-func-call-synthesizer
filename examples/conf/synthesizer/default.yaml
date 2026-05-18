@@ -123,6 +123,10 @@ critic:
   output_format: "jsonl"   # or "json", "csv", "parquet"
   use_ground_truth: False # if True, ground_truth field is required
   threshold: 0.5
+  async_config:
+    run_async: True
+    max_concurrent: 20
+    throttle_value: 0
   name: "function_call_gpt_4o_critiqued_by_deepeval"
   provider:
     model_name: "gpt-5-mini-2025-08-07"

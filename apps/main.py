@@ -455,6 +455,8 @@ def critic_function_call_dataset(cfg: DictConfig):
     cg_args["use_gt"] = critic_cfg.use_ground_truth if "use_ground_truth" in critic_cfg else False
     if "threshold" in critic_cfg:
         cg_args["threshold"] = critic_cfg.threshold
+    if "async_config" in critic_cfg:
+        cg_args["async_config"] = OmegaConf.to_container(critic_cfg.async_config, resolve=True)
     critic_generate = build_critic(**cg_args)
     max_num = cfg.synthesizer.function_call_generation.max_num
     if max_num > 0:
@@ -580,7 +582,7 @@ async def _generate_conversations_async(
     return results
 
 
-def generate_conversation_dataset(cfg: DictConfig, mcp_tools: list[dict]) -> None:
+def generate_tool_calling_conversation_dataset(cfg: DictConfig, mcp_tools: list[dict]) -> None:
     """Generate multi-turn conversation data where the assistant invokes tools via MCP.
 
     Each row in the input query dataset becomes the opening user message of a
@@ -648,8 +650,6 @@ def main(cfg: DictConfig):
         generate_conversation_dataset(cfg)
     if cfg.synthesizer.function_call_generation.enable:
         generate_function_call_dataset(cfg, mcp_tools=mcp_tools)
-    if cfg.synthesizer.conversation_generation.enable:
-        generate_conversation_dataset(cfg, mcp_tools=mcp_tools)
     if cfg.synthesizer.critic.enable:
         critic_function_call_dataset(cfg)
     if cfg.synthesizer.llama_factory.enable:

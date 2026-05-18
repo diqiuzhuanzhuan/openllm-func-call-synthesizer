@@ -107,9 +107,11 @@ def test_generate_conversation_rejects_wrong_role():
         user_model_name="human",
         assistant_model_name="assistant",
         max_turns=2,
-        human_llm=FakeLLM([
-            {"role": "assistant", "content": "I should not be here"},
-        ]),
+        human_llm=FakeLLM(
+            [
+                {"role": "assistant", "content": "I should not be here"},
+            ]
+        ),
         assistant_llm=FakeLLM([]),
     )
 
@@ -122,9 +124,11 @@ def test_generate_conversation_rejects_empty_content():
         user_model_name="human",
         assistant_model_name="assistant",
         max_turns=2,
-        human_llm=FakeLLM([
-            {"role": "user", "content": "   "},
-        ]),
+        human_llm=FakeLLM(
+            [
+                {"role": "user", "content": "   "},
+            ]
+        ),
         assistant_llm=FakeLLM([]),
     )
 
@@ -137,12 +141,16 @@ def test_generate_dataset_serializes_seed_history_and_conversation():
         user_model_name="human",
         assistant_model_name="assistant",
         max_turns=4,
-        human_llm=FakeLLM([
-            {"role": "user", "content": "Can you narrow it down?"},
-        ]),
-        assistant_llm=FakeLLM([
-            {"role": "assistant", "content": "Sure, what budget do you have?"},
-        ]),
+        human_llm=FakeLLM(
+            [
+                {"role": "user", "content": "Can you narrow it down?"},
+            ]
+        ),
+        assistant_llm=FakeLLM(
+            [
+                {"role": "assistant", "content": "Sure, what budget do you have?"},
+            ]
+        ),
     )
 
     rows = generator.generate_dataset(
