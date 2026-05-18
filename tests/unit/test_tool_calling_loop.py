@@ -228,9 +228,14 @@ async def test_mcp_exception_produces_error_content():
 @pytest.mark.anyio
 async def test_mcp_error_flag_in_result_prefixes_error():
     """When CallToolResult.is_error is True the content is prefixed with 'Error:'."""
+
     class ErrorClient:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *_): pass
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
         async def call_tool(self, name, arguments, *, raise_on_error=True):
             return FakeCallToolResult("something went wrong", is_error=True)
 
@@ -256,9 +261,9 @@ async def test_max_iterations_stops_loop():
     def llm(messages):
         return assistant(tool_calls=[make_tool_call("c", "noop", {})])
 
-    result = await ToolCallingLoop(
-        llm_callable=llm, mcp_client=client, max_iterations=3
-    ).run([{"role": "user", "content": "Loop forever"}])
+    result = await ToolCallingLoop(llm_callable=llm, mcp_client=client, max_iterations=3).run(
+        [{"role": "user", "content": "Loop forever"}]
+    )
 
     assert len([m for m in result if m["role"] == "assistant"]) == 3
 
@@ -273,15 +278,11 @@ async def test_tool_arguments_forwarded_to_mcp():
     """Arguments from the tool_call are parsed and forwarded to MCP call_tool."""
     client = FakeMCPClient({"get_weather": "22°C"})
     llm = seq_llm(
-        assistant(
-            tool_calls=[make_tool_call("c1", "get_weather", {"location": "Berlin", "units": "celsius"})]
-        ),
+        assistant(tool_calls=[make_tool_call("c1", "get_weather", {"location": "Berlin", "units": "celsius"})]),
         assistant(content="22°C in Berlin"),
     )
 
-    await ToolCallingLoop(llm_callable=llm, mcp_client=client).run(
-        [{"role": "user", "content": "Weather in Berlin?"}]
-    )
+    await ToolCallingLoop(llm_callable=llm, mcp_client=client).run([{"role": "user", "content": "Weather in Berlin?"}])
 
     assert client.calls[0]["arguments"] == {"location": "Berlin", "units": "celsius"}
 
@@ -296,9 +297,9 @@ async def test_multi_turn_tool_calls():
         assistant(content="All done"),
     )
 
-    result = await ToolCallingLoop(
-        llm_callable=llm, mcp_client=client, max_iterations=5
-    ).run([{"role": "user", "content": "Run steps"}])
+    result = await ToolCallingLoop(llm_callable=llm, mcp_client=client, max_iterations=5).run(
+        [{"role": "user", "content": "Run steps"}]
+    )
 
     roles = [m["role"] for m in result]
     # user → assistant(tool) → tool → assistant(tool) → tool → assistant(final)
@@ -342,8 +343,6 @@ async def test_mcp_client_opened_once_per_run():
         assistant(content="done"),
     )
 
-    await ToolCallingLoop(llm_callable=llm, mcp_client=client).run(
-        [{"role": "user", "content": "go"}]
-    )
+    await ToolCallingLoop(llm_callable=llm, mcp_client=client).run([{"role": "user", "content": "go"}])
 
     assert enter_count == 1

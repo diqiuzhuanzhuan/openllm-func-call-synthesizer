@@ -38,12 +38,14 @@ def generate_fingerprint(dataset: "Dataset") -> str:
     import hashlib
 
     from datasets.fingerprint import Hasher
+
     def md5sum(path):
         m = hashlib.md5()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
                 m.update(chunk)
         return m.hexdigest()
+
     state = dataset.__dict__
     hasher = Hasher()
     for key in sorted(state):

@@ -90,11 +90,10 @@ def get_weather(
     }
     return result
 
-MediaFeature = Literal[
-    "music",
-    "video",
-    "unknown"
-]
+
+MediaFeature = Literal["music", "video", "unknown"]
+
+
 @mcp.tool(name="play_media")
 def play_media(
     media_type: Annotated[
@@ -220,7 +219,6 @@ def adjust_led_brightness(
         "data": {"action": action, "input_value": value, "final_brightness": final_brightness},
         "timestamp": current_time,
     }
-
 
 
 if __name__ == "__main__":

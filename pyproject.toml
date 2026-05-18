@@ -15,6 +15,7 @@ classifiers = [
 license = {text = "MIT"}
 dependencies = [
   "bespokelabs-curator>=0.1.26",
+  "deepeval>=2.5.9",
   "datasets>=3.6.0",
   "deprecated>=1.2.18",
   "fastmcp>=2.13.0.1",

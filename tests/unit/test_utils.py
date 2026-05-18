@@ -49,11 +49,7 @@ def test_parse_hermes_tool_calls_from_openai_dict():
 
 
 def test_parse_hermes_tool_calls_from_string_block():
-    message = (
-        "<tool_call>\n"
-        '{"name": "send_email", "arguments": {"to": "team@acme.ai", "body": "Ping"}}\n'
-        "</tool_call>"
-    )
+    message = '<tool_call>\n{"name": "send_email", "arguments": {"to": "team@acme.ai", "body": "Ping"}}\n</tool_call>'
 
     result = parse_hermes_tool_calls(message)
 
@@ -84,9 +80,9 @@ def test_deduplicate_input_removes_tool_call_ids():
         )
         return {
             "prompt": [{"role": "user", "content": "Make an album"}],
-            "function_call": json.dumps([
-                {"name": "create_album", "arguments": {"title": "Weekend"}}
-            ], ensure_ascii=False),
+            "function_call": json.dumps(
+                [{"name": "create_album", "arguments": {"title": "Weekend"}}], ensure_ascii=False
+            ),
             "answer": answer,
         }
 

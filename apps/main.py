@@ -28,17 +28,19 @@ from pathlib import Path
 
 import datasets
 import hydra
-from datasets import concatenate_datasets, load_dataset
+import litellm
+from datasets import Dataset, concatenate_datasets, load_dataset
 from dotenv import load_dotenv
 from fastmcp import Client
 from omegaconf import DictConfig, OmegaConf
 from rich import pretty
 
-from openllm_func_call_synthesizer.core.critic import Critic
+from openllm_func_call_synthesizer.core.critic import build_critic, score_dataset_with_critic
 from openllm_func_call_synthesizer.core.synthesizer import (
     ConversationGenerator,
     FunctionCallGenerator,
     QueryGenerator,
+    ToolCallingLoop,
 )
 from openllm_func_call_synthesizer.logger import logger
 from openllm_func_call_synthesizer.utils import (
@@ -107,6 +109,7 @@ def _patch_datasets_dill_for_py314() -> None:
     datasets_dill.Pickler._batch_setitems = _patched_batch_setitems
     datasets_dill.Pickler._py314_batch_patch = True
 
+
 _patch_datasets_dill_for_py314()
 
 
@@ -116,6 +119,7 @@ def _patch_hash_code_for_dataset() -> None:
 
     from datasets import Dataset
     from datasets.fingerprint import Hasher
+
     def md5sum(path):
         m = hashlib.md5()
         with open(path, "rb") as f:
@@ -136,6 +140,7 @@ def _patch_hash_code_for_dataset() -> None:
             hasher.update(md5sum(cache_file))
         print(hasher.hexdigest())
         import time
+
         time.sleep(10)
         return hasher.hexdigest()
 
@@ -144,6 +149,7 @@ def _patch_hash_code_for_dataset() -> None:
 
     datasets.fingerprint.generate_fingerprint = generate_fingerprint
     Dataset._hash_code = _hash_code
+
 
 _patch_hash_code_for_dataset()
 
@@ -390,6 +396,7 @@ def generate_conversation_dataset(cfg: DictConfig):
 def generate_function_call_dataset(cfg: DictConfig, mcp_tools: list[dict]):
     # Load the function dataset
     function_call_cfg = cfg.synthesizer.function_call_generation
+    print("function_call_cfg", function_call_cfg)
     function_dataset_path = Path(function_call_cfg.function_dataset)
     if not function_dataset_path.exists():
         raise FileNotFoundError(f"File {function_dataset_path} not found")
@@ -439,13 +446,16 @@ def critic_function_call_dataset(cfg: DictConfig):
 
     dataset = load_dataset("json", data_files=data_files)
     cg_args = OmegaConf.to_container(cfg.synthesizer.critic.provider, resolve=True)
+    cg_args["backend_type"] = critic_cfg.get("backend_type", "legacy_llm")
     cg_args["query_field"] = critic_cfg.query_field
     cg_args["task_prompt_field"] = critic_cfg.task_prompt_field
     cg_args["label_field"] = critic_cfg.label_field
     cg_args["functions_field"] = critic_cfg.functions_field
     cg_args["response_field"] = critic_cfg.response_field
     cg_args["use_gt"] = critic_cfg.use_ground_truth if "use_ground_truth" in critic_cfg else False
-    critic_generate = Critic(**cg_args)
+    if "threshold" in critic_cfg:
+        cg_args["threshold"] = critic_cfg.threshold
+    critic_generate = build_critic(**cg_args)
     max_num = cfg.synthesizer.function_call_generation.max_num
     if max_num > 0:
         dataset = dataset["train"].select(range(max_num))
@@ -455,9 +465,9 @@ def critic_function_call_dataset(cfg: DictConfig):
     output_dir = Path(critic_cfg.output_dir) / critic_cfg.name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cg = critic_generate(dataset=dataset)
+    critiqued_dataset = score_dataset_with_critic(critic_generate, dataset)
 
-    persist_dataset_if_changed(cg.dataset, output_dir, "train")
+    persist_dataset_if_changed(critiqued_dataset, output_dir, "train")
     logger.info("Dataset saved to %s in train.jsonl, csv, parquet formats.", output_dir)
 
 
@@ -522,6 +532,102 @@ def create_verl_compatible_dataset(cfg: DictConfig):
         openai_format_dataset["test"].to_parquet(str(output_dir / "test.parquet"))
 
 
+async def _run_single_conversation(
+    query: str,
+    tools_schema: list[dict],
+    mcp_cfg: dict,
+    model_name: str,
+    system_prompt: str,
+    max_iterations: int,
+) -> dict:
+    """Run one agentic conversation and return query + full turn list."""
+
+    def llm_callable(messages: list[dict]) -> dict:
+        response = litellm.completion(
+            model=model_name,
+            messages=messages,
+            tools=tools_schema,
+            tool_choice="auto",
+        )
+        return response.choices[0].message.model_dump()
+
+    loop = ToolCallingLoop(
+        llm_callable=llm_callable,
+        mcp_client=Client(**mcp_cfg),
+        max_iterations=max_iterations,
+    )
+    turns = await loop.run(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query},
+        ]
+    )
+    return {"query": query, "turns": json.dumps(turns, ensure_ascii=False)}
+
+
+async def _generate_conversations_async(
+    queries: list[str],
+    tools_schema: list[dict],
+    mcp_cfg: dict,
+    model_name: str,
+    system_prompt: str,
+    max_iterations: int,
+) -> list[dict]:
+    results = []
+    for query in queries:
+        result = await _run_single_conversation(query, tools_schema, mcp_cfg, model_name, system_prompt, max_iterations)
+        results.append(result)
+    return results
+
+
+def generate_conversation_dataset(cfg: DictConfig, mcp_tools: list[dict]) -> None:
+    """Generate multi-turn conversation data where the assistant invokes tools via MCP.
+
+    Each row in the input query dataset becomes the opening user message of a
+    ToolCallingLoop run.  The full turn list (system / user / assistant tool_calls /
+    tool results / final assistant answer) is serialised to JSON and saved.
+    """
+    conversation_cfg = cfg.synthesizer.conversation_generation
+
+    query_dataset_path = Path(conversation_cfg.query_dataset)
+    if not query_dataset_path.exists():
+        raise FileNotFoundError(f"File {query_dataset_path} not found")
+
+    data_files = (
+        {"train": str(query_dataset_path)}
+        if query_dataset_path.is_file()
+        else {"train": str(query_dataset_path / "train.jsonl")}
+    )
+    dataset = load_dataset("json", data_files=data_files)
+
+    max_num = conversation_cfg.get("max_num", -1)
+    dataset = dataset["train"].select(range(max_num)) if max_num > 0 else dataset["train"]
+
+    queries: list[str] = dataset["query"]
+    tools_schema: list[dict] = convert_to_openai_tools(mcp_tools)["tools"]
+    mcp_cfg: dict = OmegaConf.to_container(cfg.synthesizer.mcp_servers["ugreen_mcp"], resolve=True)
+
+    results = asyncio.run(
+        _generate_conversations_async(
+            queries=queries,
+            tools_schema=tools_schema,
+            mcp_cfg=mcp_cfg,
+            model_name=conversation_cfg.provider.model_name,
+            system_prompt=conversation_cfg.get(
+                "system_prompt",
+                "You are a helpful assistant. Always use the available tools to answer the user's request.",
+            ),
+            max_iterations=conversation_cfg.get("max_iterations", 8),
+        )
+    )
+
+    ds = Dataset.from_list(results)
+    output_dir = Path(conversation_cfg.output_dir) / conversation_cfg.name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    persist_dataset_if_changed(ds, output_dir, "train")
+    logger.info("Conversation dataset saved to %s.", output_dir)
+
+
 @hydra.main(config_path="../examples/conf", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     pretty.pprint("loading config:")
@@ -542,6 +648,8 @@ def main(cfg: DictConfig):
         generate_conversation_dataset(cfg)
     if cfg.synthesizer.function_call_generation.enable:
         generate_function_call_dataset(cfg, mcp_tools=mcp_tools)
+    if cfg.synthesizer.conversation_generation.enable:
+        generate_conversation_dataset(cfg, mcp_tools=mcp_tools)
     if cfg.synthesizer.critic.enable:
         critic_function_call_dataset(cfg)
     if cfg.synthesizer.llama_factory.enable:

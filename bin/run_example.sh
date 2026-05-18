@@ -70,10 +70,10 @@ wait_for_server
 # start main script
 # ===============================
 python $MAIN_SCRIPT \
-    synthesizer=default \
+    synthesizer=test \
     synthesizer.mcp_servers.ugreen_mcp.transport="$SERVER_URL" \
     synthesizer.query_generation.enable=True \
     synthesizer.query_generation.function_docs="examples/function_docs.example.json" \
     synthesizer.function_call_generation.enable=True \
-    synthesizer.function_call_generation.function_dataset="data/function_query" \
+    synthesizer.function_call_generation.function_dataset="data/tool_query" \
     synthesizer.critic.enable=True

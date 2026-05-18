@@ -53,14 +53,18 @@ def test_generate_conversation_alternates_roles():
         user_model_name="human",
         assistant_model_name="assistant",
         max_turns=4,
-        human_llm=FakeLLM([
-        {"role": "user", "content": "Human message 1"},
-        {"role": "user", "content": "Human message 2"},
-        ]),
-        assistant_llm=FakeLLM([
-        {"role": "assistant", "content": "Assistant reply 1"},
-        {"role": "assistant", "content": "Assistant reply 2"},
-        ]),
+        human_llm=FakeLLM(
+            [
+                {"role": "user", "content": "Human message 1"},
+                {"role": "user", "content": "Human message 2"},
+            ]
+        ),
+        assistant_llm=FakeLLM(
+            [
+                {"role": "assistant", "content": "Assistant reply 1"},
+                {"role": "assistant", "content": "Assistant reply 2"},
+            ]
+        ),
     )
 
     conversation = generator.generate("Book a trip to Japan")
@@ -74,13 +78,17 @@ def test_generate_conversation_respects_turn_limit():
         user_model_name="human",
         assistant_model_name="assistant",
         max_turns=3,
-        human_llm=FakeLLM([
-        {"role": "user", "content": "first human"},
-        {"role": "user", "content": "second human"},
-        ]),
-        assistant_llm=FakeLLM([
-        {"role": "assistant", "content": "assistant one"},
-        ]),
+        human_llm=FakeLLM(
+            [
+                {"role": "user", "content": "first human"},
+                {"role": "user", "content": "second human"},
+            ]
+        ),
+        assistant_llm=FakeLLM(
+            [
+                {"role": "assistant", "content": "assistant one"},
+            ]
+        ),
     )
 
     conversation = generator.generate("Discuss recipes")
