@@ -24,12 +24,15 @@ import argparse
 import asyncio
 import json
 import sys
+import time
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, Protocol, cast
 
 import datasets
 import hydra
 import litellm
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
 from dotenv import load_dotenv
 from fastmcp import Client
 from omegaconf import DictConfig, OmegaConf
@@ -79,7 +82,7 @@ def _patch_datasets_dill_for_py314() -> None:
         return
 
     try:
-        from datasets.utils import _dill as datasets_dill  # type: ignore
+        from datasets.utils import _dill as datasets_dill
     except Exception:
         return
 
@@ -117,10 +120,9 @@ def _patch_hash_code_for_dataset() -> None:
 
     import hashlib
 
-    from datasets import Dataset
     from datasets.fingerprint import Hasher
 
-    def md5sum(path):
+    def md5sum(path: str) -> str:
         m = hashlib.md5()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
@@ -136,22 +138,68 @@ def _patch_hash_code_for_dataset() -> None:
             hasher.update(key)
             hasher.update(state[key])
         # hash data files last modification timestamps as well
-        for cache_file in sorted(dataset.cache_files):
-            hasher.update(md5sum(cache_file))
+        for cache_file in sorted(dataset.cache_files, key=lambda cache: str(cache)):
+            filename = cache_file.get("filename")
+            if isinstance(filename, str):
+                hasher.update(md5sum(filename))
         print(hasher.hexdigest())
-        import time
 
         time.sleep(10)
         return hasher.hexdigest()
 
-    def _hash_code(self):
+    def _hash_code(self: Dataset) -> int:
         return hash(self._fingerprint)
 
-    datasets.fingerprint.generate_fingerprint = generate_fingerprint
-    Dataset._hash_code = _hash_code
+    datasets.fingerprint.generate_fingerprint = cast(Any, generate_fingerprint)
+    cast(Any, Dataset)._hash_code = _hash_code
 
 
 _patch_hash_code_for_dataset()
+
+
+def _to_dict_config_section(value: Any, *, name: str) -> dict[str, Any]:
+    """Convert an OmegaConf section to a plain dict with a checked mapping shape."""
+
+    container = OmegaConf.to_container(value, resolve=True)
+    if not isinstance(container, dict):
+        raise TypeError(f"{name} must resolve to a mapping, got {type(container).__name__}")
+    return cast(dict[str, Any], container)
+
+
+class _DatasetLike(Protocol):
+    def select(self, indices: range) -> "_DatasetLike": ...
+
+    def map(self, function: Any, **kwargs: Any) -> "_DatasetLike": ...
+
+    def filter(self, function: Any, **kwargs: Any) -> "_DatasetLike": ...
+
+    def remove_columns(self, column_names: list[str]) -> "_DatasetLike": ...
+
+    def train_test_split(self, **kwargs: Any) -> DatasetDict: ...
+
+    def to_json(self, path_or_buf: str, **kwargs: Any) -> Any: ...
+
+    def to_csv(self, path_or_buf: str, **kwargs: Any) -> Any: ...
+
+    def to_parquet(self, path_or_buf: str, **kwargs: Any) -> Any: ...
+
+    def to_list(self) -> list[dict[str, Any]]: ...
+
+    @property
+    def column_names(self) -> list[str]: ...
+
+    def __getitem__(self, key: str) -> list[Any]: ...
+
+
+def _load_json_dataset_dict(data_files: Mapping[str, str]) -> DatasetDict:
+    dataset = load_dataset("json", data_files=dict(data_files))
+    if not isinstance(dataset, DatasetDict):
+        raise TypeError(f"Expected DatasetDict from load_dataset, got {type(dataset).__name__}")
+    return dataset
+
+
+def _get_train_dataset(data_files: Mapping[str, str]) -> _DatasetLike:
+    return cast(_DatasetLike, _load_json_dataset_dict(data_files)["train"])
 
 
 load_dotenv(override=True)
@@ -163,14 +211,8 @@ def _serialize_nested_for_parquet(ds):
     This inspects a small sample of the dataset to find nested columns and maps
     a serializer over the full dataset only when needed to avoid unnecessary work.
     """
-    try:
-        # import here to avoid hard dependency at module import time
-        from datasets import Dataset
-    except Exception:
-        Dataset = None
-
     # Only operate on HuggingFace Dataset objects
-    if Dataset is None or not isinstance(ds, Dataset):
+    if not isinstance(ds, Dataset):
         return ds
 
     length = len(ds)
@@ -198,7 +240,7 @@ def _serialize_nested_for_parquet(ds):
     return ds.map(_serializer)
 
 
-async def get_mcp_tools(mcp_cfg: dict) -> list[dict]:
+async def get_mcp_tools(mcp_cfg: Mapping[str, Any]) -> list[Any]:
     """Get tools from MCP server."""
     try:
         client = Client(**mcp_cfg)
@@ -210,7 +252,9 @@ async def get_mcp_tools(mcp_cfg: dict) -> list[dict]:
     return tools
 
 
-def choose_tools(openai_format_tools: dict, target_names: list[str]):
+def choose_tools(
+    openai_format_tools: dict[str, list[dict[str, Any]]], target_names: list[str]
+) -> dict[str, list[dict[str, Any]]]:
     if not target_names:
         return openai_format_tools
 
@@ -233,7 +277,7 @@ def choose_tools(openai_format_tools: dict, target_names: list[str]):
     return openai_format_tools2
 
 
-def generate_query_dataset(cfg: DictConfig, function_docs: list[dict]):
+def generate_query_dataset(cfg: DictConfig, function_docs: dict[str, list[dict[str, Any]]]) -> None:
     """Generate a dataset of queries for function calls.
 
     Args:
@@ -268,7 +312,7 @@ def generate_query_dataset(cfg: DictConfig, function_docs: list[dict]):
 
         logger.info("---------tool_queries_map------------ %s", tool_queries_map)
 
-    dataset_records = []
+    dataset_records: list[dict[str, str]] = []
     for tool in function_docs["tools"]:
         # Get the tool name for the current entry
         function_info = tool.get("function", {})
@@ -333,8 +377,8 @@ def generate_query_dataset(cfg: DictConfig, function_docs: list[dict]):
     logger.info("Dataset saved to %s in jsonl, csv, parquet formats.", output_dir)
 
 
-def _load_conversation_seed_records(conversation_cfg: DictConfig) -> list[dict]:
-    records: list[dict] = []
+def _load_conversation_seed_records(conversation_cfg: DictConfig) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
 
     for scenario in conversation_cfg.get("scenarios", []):
         if isinstance(scenario, str) and scenario.strip():
@@ -351,7 +395,7 @@ def _load_conversation_seed_records(conversation_cfg: DictConfig) -> list[dict]:
         else:
             data_files = {"train": str(input_path)}
 
-        dataset = load_dataset("json", data_files=data_files)["train"]
+        dataset = _get_train_dataset(data_files)
         records.extend(dataset.to_list())
 
     if not records:
@@ -368,8 +412,12 @@ def generate_conversation_dataset(cfg: DictConfig):
     conversation_cfg = cfg.synthesizer.conversation_generation
     records = _load_conversation_seed_records(conversation_cfg)
 
-    user_provider = OmegaConf.to_container(conversation_cfg.user_provider, resolve=True)
-    assistant_provider = OmegaConf.to_container(conversation_cfg.assistant_provider, resolve=True)
+    user_provider = _to_dict_config_section(
+        conversation_cfg.user_provider, name="conversation_generation.user_provider"
+    )
+    assistant_provider = _to_dict_config_section(
+        conversation_cfg.assistant_provider, name="conversation_generation.assistant_provider"
+    )
 
     generator = ConversationGenerator(
         user_model_name=user_provider["model_name"],
@@ -393,7 +441,7 @@ def generate_conversation_dataset(cfg: DictConfig):
     logger.info("Conversation dataset saved to %s in train.jsonl, csv, parquet formats.", output_dir)
 
 
-def generate_function_call_dataset(cfg: DictConfig, mcp_tools: list[dict]):
+def generate_function_call_dataset(cfg: DictConfig, mcp_tools: list[Any]) -> None:
     # Load the function dataset
     function_call_cfg = cfg.synthesizer.function_call_generation
     print("function_call_cfg", function_call_cfg)
@@ -406,9 +454,9 @@ def generate_function_call_dataset(cfg: DictConfig, mcp_tools: list[dict]):
     else:
         data_files = {"train": str(function_dataset_path / "train.jsonl")}
 
-    dataset = load_dataset("json", data_files=data_files)
+    dataset = _get_train_dataset(data_files)
 
-    fc_kwargs = OmegaConf.to_container(function_call_cfg.provider, resolve=True)
+    fc_kwargs = _to_dict_config_section(function_call_cfg.provider, name="function_call_generation.provider")
     function_docs = tool_format_convert(mcp_tools, fc_kwargs["model_name"])
 
     generation_params = fc_kwargs.get("generation_params", {})
@@ -418,12 +466,10 @@ def generate_function_call_dataset(cfg: DictConfig, mcp_tools: list[dict]):
     function_call_generator = FunctionCallGenerator(**fc_kwargs)
     max_num = function_call_cfg.max_num
     if max_num > 0:
-        dataset = dataset["train"].select(range(max_num))
-    else:
-        dataset = dataset["train"]
+        dataset = dataset.select(range(max_num))
     dataset = dataset.map(lambda x: {"functions": json.dumps(function_docs["tools"], ensure_ascii=False)})
 
-    fcg = function_call_generator(dataset=dataset)
+    fcg = function_call_generator(dataset=cast(Any, dataset))
 
     output_dir = Path(function_call_cfg.output_dir) / function_call_cfg.name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -444,8 +490,8 @@ def critic_function_call_dataset(cfg: DictConfig):
     else:
         data_files = {"train": str(function_call_dataset_path / "train.jsonl")}
 
-    dataset = load_dataset("json", data_files=data_files)
-    cg_args = OmegaConf.to_container(cfg.synthesizer.critic.provider, resolve=True)
+    dataset = _get_train_dataset(data_files)
+    cg_args = _to_dict_config_section(cfg.synthesizer.critic.provider, name="critic.provider")
     cg_args["backend_type"] = critic_cfg.get("backend_type", "legacy_llm")
     cg_args["query_field"] = critic_cfg.query_field
     cg_args["task_prompt_field"] = critic_cfg.task_prompt_field
@@ -456,13 +502,11 @@ def critic_function_call_dataset(cfg: DictConfig):
     if "threshold" in critic_cfg:
         cg_args["threshold"] = critic_cfg.threshold
     if "async_config" in critic_cfg:
-        cg_args["async_config"] = OmegaConf.to_container(critic_cfg.async_config, resolve=True)
+        cg_args["async_config"] = _to_dict_config_section(critic_cfg.async_config, name="critic.async_config")
     critic_generate = build_critic(**cg_args)
     max_num = cfg.synthesizer.function_call_generation.max_num
     if max_num > 0:
-        dataset = dataset["train"].select(range(max_num))
-    else:
-        dataset = dataset["train"]
+        dataset = dataset.select(range(max_num))
 
     output_dir = Path(critic_cfg.output_dir) / critic_cfg.name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -483,28 +527,31 @@ def create_llama_factory_compatible_dataset(cfg: DictConfig):
     else:
         data_files = {"train": str(critic_dataset_path / "train.jsonl")}
     logger.info("%s", data_files)
-    dataset = load_dataset("json", data_files=data_files)
-    if llama_factory_cfg.score_field in dataset["train"].column_names:
+    dataset = _get_train_dataset(data_files)
+    if llama_factory_cfg.score_field in dataset.column_names:
         dataset = dataset.filter(lambda x: x[llama_factory_cfg.score_field] >= llama_factory_cfg.score_threshold)
 
-    openai_format_dataset = dataset.map(
+    openai_format_train = dataset.map(
         format_openai,
         fn_kwargs={"system_prompt": llama_factory_cfg.system_prompt},
-    ).remove_columns(dataset["train"].column_names)
+    ).remove_columns(dataset.column_names)
     output_dir = Path(llama_factory_cfg.output_dir) / llama_factory_cfg.name
     output_dir.mkdir(parents=True, exist_ok=True)
     if llama_factory_cfg.split_ratio > 0 and llama_factory_cfg.split_ratio < 1:
-        openai_format_dataset = openai_format_dataset["train"].train_test_split(
-            test_size=1 - llama_factory_cfg.split_ratio
-        )
+        openai_format_dataset = openai_format_train.train_test_split(test_size=1 - llama_factory_cfg.split_ratio)
+    else:
+        openai_format_dataset = DatasetDict({"train": cast(Dataset, openai_format_train)})
 
-    openai_format_dataset["train"].to_json(str(output_dir / "train.jsonl"), orient="records", lines=True)
-    openai_format_dataset["train"].to_csv(str(output_dir / "train.csv"))
-    openai_format_dataset["train"].to_parquet(str(output_dir / "train.parquet"))
-    if "test" in openai_format_dataset:
-        openai_format_dataset["test"].to_json(str(output_dir / "test.jsonl"), orient="records", lines=True)
-        openai_format_dataset["test"].to_csv(str(output_dir / "test.csv"))
-        openai_format_dataset["test"].to_parquet(str(output_dir / "test.parquet"))
+    train_dataset = cast(_DatasetLike, openai_format_dataset["train"])
+    train_dataset.to_json(str(output_dir / "train.jsonl"), orient="records", lines=True)
+    train_dataset.to_csv(str(output_dir / "train.csv"))
+    train_dataset.to_parquet(str(output_dir / "train.parquet"))
+    test_dataset = openai_format_dataset.get("test")
+    if test_dataset is not None:
+        test_dataset = cast(_DatasetLike, test_dataset)
+        test_dataset.to_json(str(output_dir / "test.jsonl"), orient="records", lines=True)
+        test_dataset.to_csv(str(output_dir / "test.csv"))
+        test_dataset.to_parquet(str(output_dir / "test.parquet"))
 
 
 def create_verl_compatible_dataset(cfg: DictConfig):
@@ -512,39 +559,44 @@ def create_verl_compatible_dataset(cfg: DictConfig):
     critic_dataset_path = Path(verl_cfg.critic_dataset)
     if not critic_dataset_path.exists():
         raise FileNotFoundError(f"File {critic_dataset_path} not found")
-    dataset = load_dataset("json", data_files={"train": str(critic_dataset_path / "train.jsonl")})
-    if verl_cfg.score_field in dataset["train"].column_names:
+    dataset = _get_train_dataset({"train": str(critic_dataset_path / "train.jsonl")})
+    if verl_cfg.score_field in dataset.column_names:
         dataset = dataset.filter(lambda x: x[verl_cfg.score_field] < verl_cfg.score_threshold)
 
-    openai_format_dataset = dataset.map(
+    openai_format_train = dataset.map(
         format_openai,
         fn_kwargs={"system_prompt": verl_cfg.system_prompt},
-    ).remove_columns(dataset["train"].column_names)
+    ).remove_columns(dataset.column_names)
     output_dir = Path(verl_cfg.output_dir) / verl_cfg.name
     output_dir.mkdir(parents=True, exist_ok=True)
     if verl_cfg.split_ratio > 0 and verl_cfg.split_ratio < 1:
-        openai_format_dataset = openai_format_dataset["train"].train_test_split(test_size=1 - verl_cfg.split_ratio)
+        openai_format_dataset = openai_format_train.train_test_split(test_size=1 - verl_cfg.split_ratio)
+    else:
+        openai_format_dataset = DatasetDict({"train": cast(Dataset, openai_format_train)})
 
-    openai_format_dataset["train"].to_json(str(output_dir / "train.jsonl"), orient="records", lines=True)
-    openai_format_dataset["train"].to_csv(str(output_dir / "train.csv"))
-    openai_format_dataset["train"].to_parquet(str(output_dir / "train.parquet"))
-    if "test" in openai_format_dataset:
-        openai_format_dataset["test"].to_json(str(output_dir / "test.jsonl"), orient="records", lines=True)
-        openai_format_dataset["test"].to_csv(str(output_dir / "test.csv"))
-        openai_format_dataset["test"].to_parquet(str(output_dir / "test.parquet"))
+    train_dataset = cast(_DatasetLike, openai_format_dataset["train"])
+    train_dataset.to_json(str(output_dir / "train.jsonl"), orient="records", lines=True)
+    train_dataset.to_csv(str(output_dir / "train.csv"))
+    train_dataset.to_parquet(str(output_dir / "train.parquet"))
+    test_dataset = openai_format_dataset.get("test")
+    if test_dataset is not None:
+        test_dataset = cast(_DatasetLike, test_dataset)
+        test_dataset.to_json(str(output_dir / "test.jsonl"), orient="records", lines=True)
+        test_dataset.to_csv(str(output_dir / "test.csv"))
+        test_dataset.to_parquet(str(output_dir / "test.parquet"))
 
 
 async def _run_single_conversation(
     query: str,
-    tools_schema: list[dict],
-    mcp_cfg: dict,
+    tools_schema: list[dict[str, Any]],
+    mcp_cfg: Mapping[str, Any],
     model_name: str,
     system_prompt: str,
     max_iterations: int,
 ) -> dict:
     """Run one agentic conversation and return query + full turn list."""
 
-    def llm_callable(messages: list[dict]) -> dict:
+    def llm_callable(messages: list[dict[str, Any]]) -> dict[str, Any]:
         response = litellm.completion(
             model=model_name,
             messages=messages,
@@ -582,7 +634,7 @@ async def _generate_conversations_async(
     return results
 
 
-def generate_tool_calling_conversation_dataset(cfg: DictConfig, mcp_tools: list[dict]) -> None:
+def generate_tool_calling_conversation_dataset(cfg: DictConfig, mcp_tools: list[Any]) -> None:
     """Generate multi-turn conversation data where the assistant invokes tools via MCP.
 
     Each row in the input query dataset becomes the opening user message of a
@@ -600,14 +652,15 @@ def generate_tool_calling_conversation_dataset(cfg: DictConfig, mcp_tools: list[
         if query_dataset_path.is_file()
         else {"train": str(query_dataset_path / "train.jsonl")}
     )
-    dataset = load_dataset("json", data_files=data_files)
+    dataset = _get_train_dataset(data_files)
 
     max_num = conversation_cfg.get("max_num", -1)
-    dataset = dataset["train"].select(range(max_num)) if max_num > 0 else dataset["train"]
+    if max_num > 0:
+        dataset = dataset.select(range(max_num))
 
-    queries: list[str] = dataset["query"]
-    tools_schema: list[dict] = convert_to_openai_tools(mcp_tools)["tools"]
-    mcp_cfg: dict = OmegaConf.to_container(cfg.synthesizer.mcp_servers["ugreen_mcp"], resolve=True)
+    queries = [str(query) for query in dataset["query"]]
+    tools_schema: list[dict[str, Any]] = convert_to_openai_tools(mcp_tools)["tools"]
+    mcp_cfg = _to_dict_config_section(cfg.synthesizer.mcp_servers["ugreen_mcp"], name="mcp_servers.ugreen_mcp")
 
     results = asyncio.run(
         _generate_conversations_async(

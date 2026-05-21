@@ -23,7 +23,7 @@
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, cast
 
 from bespokelabs import curator
 from bespokelabs.curator.log import logger
@@ -41,8 +41,10 @@ class FunctionCallGenerator(curator.LLM):
     return_completions_object = True
     debug = False
 
-    def prompt(self, input: dict) -> str:
+    def prompt(self, input: dict[str, Any] | BaseModel) -> dict[str, Any] | BaseModel:
         """The prompt is used to generate the function call."""
+        if isinstance(input, BaseModel):
+            input = input.model_dump()
         # Prepare a readable listing of available functions
         # return f"""
         # {input["query"]}
@@ -51,10 +53,10 @@ class FunctionCallGenerator(curator.LLM):
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": input["query"].strip()},
         ]
-        return messages
+        return cast(dict[str, Any] | BaseModel, messages)
 
-    def _parse_function_call(self, raw_output: dict) -> dict:
-        parsed = []
+    def _parse_function_call(self, raw_output: list[dict[str, Any]]) -> str:
+        parsed: list[dict[str, Any]] = []
         for call in raw_output:
             # Handle standard format with "function" wrapper
             if "function" in call:
@@ -74,7 +76,7 @@ class FunctionCallGenerator(curator.LLM):
 
         return json.dumps(parsed, ensure_ascii=False, indent=2)
 
-    def _deduplicate_input_ls(self, input_ls):
+    def _deduplicate_input_ls(self, input_ls: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Deduplicate input_ls based on the fields: prompt, function_call, answer.
         If all three fields are identical (ignoring 'tool_call' id), keep only one instance.
@@ -85,7 +87,7 @@ class FunctionCallGenerator(curator.LLM):
 
         """
 
-        def norm_answer(answer):
+        def norm_answer(answer: Any) -> Any:
             # the format of answer is a string of json, so we need to parse it first
             try:
                 data = json.loads(answer)
@@ -104,7 +106,7 @@ class FunctionCallGenerator(curator.LLM):
         seen = set()
         deduped = []
 
-        def _to_hashable(value):
+        def _to_hashable(value: Any) -> Any:
             if isinstance(value, list | dict):
                 try:
                     return json.dumps(value, ensure_ascii=False, sort_keys=True)
@@ -123,13 +125,17 @@ class FunctionCallGenerator(curator.LLM):
                 deduped.append(item)
         return deduped
 
-    def parse(self, input: dict, response) -> list:
+    def parse(
+        self, input: dict[str, Any] | BaseModel, response: dict[str, Any] | BaseModel
+    ) -> dict[str, Any] | BaseModel:
         """Parse each choice in the response to extract the function call or the message."""
+        input_dict = input.model_dump() if isinstance(input, BaseModel) else dict(input)
+        response_dict = response.model_dump() if isinstance(response, BaseModel) else response
         input_ls = []
-        prompt = self.prompt(input)
-        print("--------------choices response------------------", response["choices"])
-        for choice in response["choices"]:
-            this_input = dict(input)  # make a shallow copy
+        prompt = self.prompt(input_dict)
+        print("--------------choices response------------------", response_dict["choices"])
+        for choice in response_dict["choices"]:
+            this_input = dict(input_dict)  # make a shallow copy
             this_input["prompt"] = prompt
 
             message = choice.get("message", {})
@@ -161,7 +167,7 @@ class FunctionCallGenerator(curator.LLM):
             input_ls = self._deduplicate_input_ls(input_ls)
             if self.debug:
                 print(" ------------ deduped input list ------------ ", input_ls)
-        return input_ls
+        return cast(dict[str, Any] | BaseModel, input_ls)
 
 
 class QueryFunc(BaseModel):
@@ -180,43 +186,55 @@ class QueryGenerator(curator.LLM):
 
     return_completions_object = True
 
-    def __init__(self, model_name: str = None, backend: str = None, language: str = "English", **kwargs):
+    def __init__(
+        self, model_name: str = "", backend: str | None = None, language: str = "English", **kwargs: Any
+    ) -> None:
         """Initialize with optional language for generation."""
         super().__init__(model_name=model_name, backend=backend, **kwargs)
         self.language = language
 
-    def _hash_fingerprint(self, dataset_hash: str = "", disable_cache: bool = False):
-        from xxhash import xxh64
-
+    def _hash_fingerprint(self, dataset_hash: str = "", disable_cache: bool = False) -> str:
         fingerprint = super()._hash_fingerprint(dataset_hash, disable_cache)
         fingerprint = f"{fingerprint}_{xxh64(self.language.encode('utf-8')).hexdigest()}"
         logger.info(f"Curator Cache Fingerprint: {fingerprint}")
         return fingerprint
 
-    def prompt(self, input: dict) -> str:
+    def prompt(self, input: dict[str, Any] | BaseModel) -> dict[str, Any] | BaseModel:
         """The prompt is used to generate the query."""
+        if isinstance(input, BaseModel):
+            input = input.model_dump()
         seed_query = input.get("query", "")
-        return QUERY_GENERATE_SYSTEM_HEADER.format(
-            language=self.language, function=input["function"], seed_query=seed_query, function_name=input["function"]
+        return cast(
+            dict[str, Any] | BaseModel,
+            QUERY_GENERATE_SYSTEM_HEADER.format(
+                language=self.language,
+                function=input["function"],
+                seed_query=seed_query,
+                function_name=input["function"],
+            ),
         )
 
-    def parse(self, input: dict, response) -> list[dict]:
+    def parse(
+        self, input: dict[str, Any] | BaseModel, response: dict[str, Any] | BaseModel
+    ) -> dict[str, Any] | BaseModel:
         """Parse the response to extract the query."""
+        input_dict = input.model_dump() if isinstance(input, BaseModel) else dict(input)
+        response_dict = response.model_dump() if isinstance(response, BaseModel) else response
 
-        query = extract_format(format="json", content=response["choices"][0]["message"]["content"])
-        function_hash = xxh64(str(input["function"]).encode("utf-8")).hexdigest()
+        query = extract_format(format="json", content=response_dict["choices"][0]["message"]["content"])
+        function_hash = xxh64(str(input_dict["function"]).encode("utf-8")).hexdigest()
         # Build a list of query variation records with metadata
         output = [
             {
                 "query": ele["query"],
                 "dimension": ele["dimension"],
                 "language": self.language,
-                "function": input["function"],
+                "function": input_dict["function"],
                 "function_hash": function_hash,
             }
             for ele in query["variations"]
         ]
-        return output
+        return cast(dict[str, Any] | BaseModel, output)
 
 
 DEFAULT_USER_SYSTEM_PROMPT = (
@@ -249,16 +267,19 @@ class ConversationRoleLLM(curator.LLM):
         target_role: str,
         system_prompt: str,
         backend: str | None = None,
-        generation_params: dict | None = None,
-        **kwargs,
+        generation_params: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(model_name=model_name, backend=backend, generation_params=generation_params, **kwargs)
         self.target_role = target_role
         self.system_prompt = system_prompt
 
-    def prompt(self, input: dict) -> list[dict[str, str]]:
-        scenario = input["scenario"]
-        history: list[dict[str, str]] = input.get("history", [])
+    def prompt(self, input: dict[str, Any] | BaseModel) -> dict[str, Any] | BaseModel:
+        input_dict = input.model_dump() if isinstance(input, BaseModel) else dict(input)
+        scenario = str(input_dict["scenario"])
+        history = input_dict.get("history", [])
+        if not isinstance(history, list):
+            raise ValueError("history must be a list of messages")
         messages: list[dict[str, str]] = [{"role": "system", "content": f"{self.system_prompt}\nScenario: {scenario}"}]
         messages.extend(history)
         if self.target_role == "user":
@@ -266,12 +287,20 @@ class ConversationRoleLLM(curator.LLM):
         else:
             instruction = "Respond as the assistant, addressing the latest human turn."
         messages.append({"role": "user", "content": instruction})
-        return messages
+        return cast(dict[str, Any] | BaseModel, messages)
 
-    def parse(self, input: dict, response) -> dict:
-        content = response["choices"][0]["message"]["content"].strip()
-        input["next_turn"] = {"role": self.target_role, "content": content}
-        return input
+    def parse(
+        self, input: dict[str, Any] | BaseModel, response: dict[str, Any] | BaseModel
+    ) -> dict[str, Any] | BaseModel:
+        input_dict = input.model_dump() if isinstance(input, BaseModel) else dict(input)
+        response_dict = response.model_dump() if isinstance(response, BaseModel) else response
+        content = response_dict["choices"][0]["message"]["content"].strip()
+        input_dict["next_turn"] = {"role": self.target_role, "content": content}
+        return input_dict
+
+
+class ConversationRunner(Protocol):
+    def __call__(self, rows: list[dict[str, Any]]) -> Any: ...
 
 
 class ConversationGenerator:
@@ -285,33 +314,41 @@ class ConversationGenerator:
         max_turns: int = 6,
         user_backend: str | None = None,
         assistant_backend: str | None = None,
-        user_generation_params: dict | None = None,
-        assistant_generation_params: dict | None = None,
+        user_generation_params: dict[str, Any] | None = None,
+        assistant_generation_params: dict[str, Any] | None = None,
         user_system_prompt: str | None = None,
         assistant_system_prompt: str | None = None,
-        human_llm: ConversationRoleLLM | None = None,
-        assistant_llm: ConversationRoleLLM | None = None,
+        human_llm: ConversationRunner | None = None,
+        assistant_llm: ConversationRunner | None = None,
     ) -> None:
 
         if max_turns < 2:
             raise ValueError("max_turns must be at least 2 so both roles can speak")
         self.max_turns = max_turns
-        self.human_llm = human_llm or ConversationRoleLLM(
-            model_name=user_model_name,
-            backend=user_backend,
-            generation_params=user_generation_params,
-            target_role="user",
-            system_prompt=user_system_prompt or DEFAULT_USER_SYSTEM_PROMPT,
+        self.human_llm = cast(
+            ConversationRunner,
+            human_llm
+            or ConversationRoleLLM(
+                model_name=user_model_name,
+                backend=user_backend,
+                generation_params=user_generation_params,
+                target_role="user",
+                system_prompt=user_system_prompt or DEFAULT_USER_SYSTEM_PROMPT,
+            ),
         )
-        self.assistant_llm = assistant_llm or ConversationRoleLLM(
-            model_name=assistant_model_name,
-            backend=assistant_backend,
-            generation_params=assistant_generation_params,
-            target_role="assistant",
-            system_prompt=assistant_system_prompt or DEFAULT_ASSISTANT_SYSTEM_PROMPT,
+        self.assistant_llm = cast(
+            ConversationRunner,
+            assistant_llm
+            or ConversationRoleLLM(
+                model_name=assistant_model_name,
+                backend=assistant_backend,
+                generation_params=assistant_generation_params,
+                target_role="assistant",
+                system_prompt=assistant_system_prompt or DEFAULT_ASSISTANT_SYSTEM_PROMPT,
+            ),
         )
 
-    def _run_role_model(self, llm: ConversationRoleLLM, scenario: str, history: list[dict[str, str]]) -> dict[str, str]:
+    def _run_role_model(self, llm: ConversationRunner, scenario: str, history: list[dict[str, str]]) -> dict[str, str]:
         row = {"scenario": scenario, "history": history}
         response = llm([row])
         output_rows = response.dataset.to_list()
@@ -325,6 +362,8 @@ class ConversationGenerator:
         role = turn.get("role")
         content = turn.get("content")
 
+        if not isinstance(role, str):
+            raise ValueError(f"Expected role '{expected_role}', got '{role}'")
         if role != expected_role:
             raise ValueError(f"Expected role '{expected_role}', got '{role}'")
         if not isinstance(content, str) or not content.strip():

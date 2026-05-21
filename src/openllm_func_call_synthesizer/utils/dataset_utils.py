@@ -14,13 +14,14 @@
 # MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
 from pathlib import Path
+from typing import Any
 
-from datasets import Dataset, load_dataset
+from datasets import Dataset, DatasetDict, load_dataset
 
 from openllm_func_call_synthesizer.logger import logger
 
 
-def convert_to_dataset(data: list[dict]) -> Dataset:
+def convert_to_dataset(data: list[dict[str, Any]]) -> Dataset:
     """Convert a list of dictionaries to a Hugging Face Dataset.
 
     Args:
@@ -29,8 +30,6 @@ def convert_to_dataset(data: list[dict]) -> Dataset:
     Returns:
         A Hugging Face Dataset.
     """
-    load_dataset("json", data_files={"train": data})
-
     return Dataset.from_dict({k: [dic[k] for dic in data] for k in data[0]})
 
 
@@ -39,7 +38,7 @@ def generate_fingerprint(dataset: "Dataset") -> str:
 
     from datasets.fingerprint import Hasher
 
-    def md5sum(path):
+    def md5sum(path: str) -> str:
         m = hashlib.md5()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
@@ -54,8 +53,10 @@ def generate_fingerprint(dataset: "Dataset") -> str:
         hasher.update(key)
         hasher.update(state[key])
     # hash data files last modification timestamps as well
-    for cache_file in sorted(dataset.cache_files):
-        hasher.update(md5sum(cache_file))
+    for cache_file in sorted(dataset.cache_files, key=lambda cache: str(cache)):
+        filename = cache_file.get("filename")
+        if isinstance(filename, str):
+            hasher.update(md5sum(filename))
     return hasher.hexdigest()
 
 
@@ -80,7 +81,7 @@ def persist_dataset_if_changed(dataset: Dataset, output_dir: Path, filename: str
     logger.info("Dataset saved to %s in jsonl/csv/parquet formats.", output_dir)
 
 
-def format_openai(example: dict, system_prompt: str) -> dict:
+def format_openai(example: dict[str, Any], system_prompt: str) -> dict[str, Any]:
     """Format an example for OpenAI.
 
     Args:
@@ -114,11 +115,14 @@ if __name__ == "__main__":
 
     file = Path(__file__).parent / "train.jsonl"
     dataset = load_dataset("json", data_files=file.as_posix())
-    openai_format_dataset = dataset.map(
+    if not isinstance(dataset, DatasetDict):
+        raise TypeError(f"Expected DatasetDict, got {type(dataset).__name__}")
+    train_dataset = dataset["train"]
+    openai_format_dataset = train_dataset.map(
         format_openai,
         fn_kwargs={"system_prompt": "You are a helpful assistant."},
-    ).remove_columns(dataset["train"].column_names)
-    openai_format_dataset["train"].to_json("openai_format_dataset.jsonl", orient="records", lines=True)
+    ).remove_columns(train_dataset.column_names)
+    openai_format_dataset.to_json("openai_format_dataset.jsonl", orient="records", lines=True)
     print(openai_format_dataset)
     """
     in LLaMA_FACTORY, DatasetInfo should be like this:

@@ -27,11 +27,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import mcp
 import pandas as pd
 import yaml
 from datasets import Dataset
 from deprecated import deprecated
-from fastmcp.tools import Tool
 from pydantic import BaseModel
 
 
@@ -133,7 +133,7 @@ def convert_to_mcp_tools(function_docs: list[dict[str, Any]]) -> dict[str, list[
     return {"tools": tools}
 
 
-def convert_to_openai_tools(tools: list[Tool]) -> dict[str, list[dict[str, Any]]]:
+def convert_to_openai_tools(tools: list[mcp.types.Tool]) -> dict[str, list[dict[str, Any]]]:
     functions = []
     for tool in tools:
         function = {
@@ -148,7 +148,7 @@ def convert_to_openai_tools(tools: list[Tool]) -> dict[str, list[dict[str, Any]]
     return {"tools": functions}
 
 
-def convert_to_gemini_tools(tools: list[Tool]) -> dict[str, list[dict[str, Any]]]:
+def convert_to_gemini_tools(tools: list[mcp.types.Tool]) -> dict[str, list[dict[str, Any]]]:
     functions = []
     for tool in tools:
         function = {
@@ -290,13 +290,13 @@ def extract_format(format: str = "json", content: str = "") -> Any:
     return None
 
 
-def tool_format_convert(mcp_tools: list[dict[str, Any]], model: str) -> list[dict[str, Any]]:
+def tool_format_convert(mcp_tools: list[mcp.types.Tool], model: str) -> dict[str, list[dict[str, Any]]]:
     if model.startswith("gpt"):
         return convert_to_openai_tools(mcp_tools)
     if model.startswith("gemini"):
         return convert_to_gemini_tools(mcp_tools)
     if model.startswith("claude"):
-        return mcp_tools
+        return convert_to_openai_tools(mcp_tools)
     return convert_to_openai_tools(mcp_tools)
 
 
@@ -430,7 +430,7 @@ def pick_unique(
 
     # HuggingFace Dataset
     elif Dataset is not None and isinstance(dataset, Dataset):
-        df = dataset.to_pandas().drop_duplicates(subset=[field]).head(k)
+        df = pd.DataFrame(dataset.to_pandas()).drop_duplicates(subset=[field]).head(k)
         return Dataset.from_pandas(df)
 
     else:
@@ -466,11 +466,10 @@ def complete_language_column(row):
         return detect_language(row["input"])
 
 
-async def get_mcp_tools(mcp_cfg: dict) -> list[dict]:
+async def get_mcp_tools(mcp_cfg: dict[str, Any]) -> list[mcp.types.Tool]:
     """Get tools from MCP server."""
     from fastmcp import Client
 
-    mcp_cfg = mcp_cfg
     client = Client(**mcp_cfg)
     async with client:
         tools = await client.list_tools()

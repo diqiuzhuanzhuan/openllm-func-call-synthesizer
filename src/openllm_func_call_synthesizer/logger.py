@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any, cast
 
 _DEFAULT_LOG_LEVEL = os.getenv("OPENLLM_FUNC_CALL_SYNTHESIZER_LOG_LEVEL", "INFO")
 _LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
@@ -54,7 +55,7 @@ def _ensure_configured(logger: logging.Logger) -> logging.Logger:
         logger.addHandler(handler)
 
     logger.propagate = False
-    logger._openllm_logger_configured = True
+    cast(Any, logger)._openllm_logger_configured = True
     return logger
 
 
