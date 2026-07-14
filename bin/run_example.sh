@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
 # ===============================
@@ -11,6 +11,58 @@ MAIN_SCRIPT="apps/main.py"
 SERVER_URL="http://localhost:8000/mcp"
 # auto restart delay (seconds)
 RESTART_DELAY=2
+
+# ===============================
+# install system command dependencies
+# ===============================
+install_command() {
+    local command_name="$1"
+    local apt_package="$2"
+    local rpm_package="$3"
+    local apk_package="$4"
+
+    if command -v "$command_name" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "[INFO] '$command_name' is missing; installing it..."
+
+    local privilege=()
+    if [ "$(id -u)" -ne 0 ]; then
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo "[ERROR] Installing '$command_name' requires root privileges or sudo."
+            exit 1
+        fi
+        privilege=(sudo)
+    fi
+
+    if command -v apt-get >/dev/null 2>&1; then
+        "${privilege[@]}" apt-get update
+        "${privilege[@]}" apt-get install -y "$apt_package"
+    elif command -v dnf >/dev/null 2>&1; then
+        "${privilege[@]}" dnf install -y "$rpm_package"
+    elif command -v yum >/dev/null 2>&1; then
+        "${privilege[@]}" yum install -y "$rpm_package"
+    elif command -v apk >/dev/null 2>&1; then
+        "${privilege[@]}" apk add --no-cache "$apk_package"
+    else
+        echo "[ERROR] No supported package manager found to install '$command_name'."
+        exit 1
+    fi
+}
+
+install_dependencies() {
+    install_command curl curl curl curl
+    install_command pkill procps procps-ng procps
+
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "[ERROR] 'uv' is required. Install it from https://docs.astral.sh/uv/getting-started/installation/"
+        exit 1
+    fi
+
+    echo "[INFO] Syncing Python environment with uv..."
+    uv sync
+}
 
 # ===============================
 # wait for server ready
@@ -36,7 +88,7 @@ wait_for_server() {
 start_server() {
     echo "[INFO] start MCP Server: $SERVER_URL"
     while true; do
-        python $SERVER_SCRIPT &
+        uv run python "$SERVER_SCRIPT" &
         SERVER_PID=$!
         echo "[INFO] Server PID=$SERVER_PID"
 
@@ -60,6 +112,9 @@ cleanup() {
 
 trap cleanup EXIT
 
+# install required commands and synchronize the Python environment
+install_dependencies
+
 # start server in background
 start_server &
 
@@ -69,7 +124,7 @@ wait_for_server
 # ===============================
 # start main script
 # ===============================
-python $MAIN_SCRIPT \
+uv run python "$MAIN_SCRIPT" \
     synthesizer=test \
     synthesizer.mcp_servers.ugreen_mcp.transport="$SERVER_URL" \
     synthesizer.query_generation.enable=True \
